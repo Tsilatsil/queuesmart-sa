@@ -5,9 +5,11 @@ import retrofit2.HttpException
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 import retrofit2.http.Body
+import retrofit2.http.DELETE
 import retrofit2.http.GET
 import retrofit2.http.Header
 import retrofit2.http.POST
+import retrofit2.http.Path
 import retrofit2.http.Query
 
 // ---- Data blueprints (they match the JSON from your backend) ----
@@ -95,6 +97,33 @@ data class BookingResponse(
     val appointment: BookedAppointment
 )
 
+// A document in the "my bookings" list (this endpoint sends no id for documents)
+data class DocumentItem(
+    val name: String,
+    val note: String?
+)
+
+data class MyAppointment(
+    val id: String,
+    val reference: String,
+    val startsAt: String,
+    val status: String,
+    val branch: String,
+    val address: String,
+    val service: String,
+    val requiredDocuments: List<DocumentItem>
+)
+
+data class CancelledAppointment(
+    val id: String,
+    val reference: String,
+    val status: String
+)
+
+data class CancelResponse(
+    val appointment: CancelledAppointment
+)
+
 data class ErrorBody(val error: String?)
 
 // ---- The questions the app can ask your API ----
@@ -124,6 +153,17 @@ interface QueueSmartApi {
         @Header("Authorization") authorization: String,
         @Body body: BookingRequest
     ): BookingResponse
+
+    @GET("api/my-appointments")
+    suspend fun getMyAppointments(
+        @Header("Authorization") authorization: String
+    ): List<MyAppointment>
+
+    @DELETE("api/appointments/{id}")
+    suspend fun cancelAppointment(
+        @Header("Authorization") authorization: String,
+        @Path("id") id: String
+    ): CancelResponse
 }
 
 // ---- Builds the connection to your backend ----

@@ -45,9 +45,23 @@ class MainActivity : ComponentActivity() {
 // South Africa's time zone. The backend works in this zone too.
 private val SA_ZONE: ZoneId = ZoneId.of("Africa/Johannesburg")
 private val DAY_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("EEE d MMM")
+private val WHEN_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("EEE d MMM yyyy, HH:mm")
 
 // 480 minutes after midnight -> "08:00"
 fun formatMinutes(total: Int): String = "%02d:%02d".format(total / 60, total % 60)
+
+// "2026-10-28T07:00:00.000Z" -> "Wed 28 Oct 2026, 09:00" (South African time)
+fun formatWhen(iso: String): String =
+    ZonedDateTime.ofInstant(Instant.parse(iso), SA_ZONE).format(WHEN_FORMAT)
+
+// BOOKED -> "Booked"
+fun statusLabel(status: String): String = when (status) {
+    "BOOKED" -> "Booked"
+    "CANCELLED" -> "Cancelled"
+    "ATTENDED" -> "Attended"
+    "NO_SHOW" -> "Did not attend"
+    else -> status
+}
 
 // The next 14 weekdays, starting today (branches are closed on weekends)
 fun upcomingWeekdays(count: Int = 14): List<LocalDate> {
@@ -65,14 +79,16 @@ fun App(modifier: Modifier = Modifier) {
     var selectedBranch by remember { mutableStateOf<Branch?>(null) }
     var selectedService by remember { mutableStateOf<ServiceType?>(null) }
     var booking by remember { mutableStateOf(false) }
+    var showMyBookings by remember { mutableStateOf(false) }
 
     val current = session
     val branch = selectedBranch
     val service = selectedService
 
     // Makes the phone's own Back button step back one screen
-    BackHandler(enabled = branch != null) {
+    BackHandler(enabled = showMyBookings || branch != null) {
         when {
+            showMyBookings -> showMyBookings = false
             booking -> booking = false
             service != null -> selectedService = null
             else -> selectedBranch = null
@@ -85,15 +101,23 @@ fun App(modifier: Modifier = Modifier) {
             onAuthenticated = { session = it }
         )
 
+        showMyBookings -> MyBookingsScreen(
+            modifier,
+            token = current.token,
+            onBack = { showMyBookings = false }
+        )
+
         branch == null -> BranchesScreen(
             modifier,
             userName = current.user.name,
             onBranchClick = { selectedBranch = it },
+            onMyBookings = { showMyBookings = true },
             onLogout = {
                 session = null
                 selectedBranch = null
                 selectedService = null
                 booking = false
+                showMyBookings = false
             }
         )
 
@@ -226,6 +250,7 @@ fun BranchesScreen(
     modifier: Modifier = Modifier,
     userName: String,
     onBranchClick: (Branch) -> Unit,
+    onMyBookings: () -> Unit,
     onLogout: () -> Unit
 ) {
     var branches by remember { mutableStateOf<List<Branch>>(emptyList()) }
@@ -243,12 +268,10 @@ fun BranchesScreen(
     }
 
     Column(modifier = modifier.padding(16.dp)) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text("Hi, $userName", style = MaterialTheme.typography.titleMedium)
+        Text("Hi, $userName", style = MaterialTheme.typography.titleMedium)
+
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            TextButton(onClick = onMyBookings) { Text("My bookings") }
             TextButton(onClick = onLogout) { Text("Log out") }
         }
 
@@ -664,6 +687,178 @@ fun BookingConfirmed(
                 .padding(top = 24.dp)
         ) {
             Text("Done")
+        }
+    }
+}
+
+@Composable
+fun MyBookingsScreen(
+    modifier: Modifier = Modifier,
+    token: String,
+    onBack: () -> Unit
+) {
+    var appointments by remember { mutableStateOf<List<MyAppointment>>(emptyList()) }
+    var loading by remember { mutableStateOf(true) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var refresh by remember { mutableIntStateOf(0) }
+    var toCancel by remember { mutableStateOf<MyAppointment?>(null) }
+    var cancelling by remember { mutableStateOf(false) }
+    var cancelError by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+
+    // Loads the list when the screen opens, and again after every cancel
+    LaunchedEffect(refresh) {
+        error = null
+        try {
+            appointments = ApiClient.api.getMyAppointments("Bearer $token")
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            error = errorMessage(e)
+        } finally {
+            loading = false
+        }
+    }
+
+    // The "Are you sure?" pop-up
+    toCancel?.let { target ->
+        AlertDialog(
+            onDismissRequest = { if (!cancelling) toCancel = null },
+            title = { Text("Cancel this booking?") },
+            text = {
+                Text(
+                    "${target.service} at ${target.branch}\n" +
+                            "${formatWhen(target.startsAt)}\n" +
+                            "Reference ${target.reference}"
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = !cancelling,
+                    onClick = {
+                        cancelling = true
+                        cancelError = null
+                        scope.launch {
+                            try {
+                                ApiClient.api.cancelAppointment("Bearer $token", target.id)
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (e: Exception) {
+                                cancelError = errorMessage(e)
+                            } finally {
+                                cancelling = false
+                                toCancel = null
+                                refresh++
+                            }
+                        }
+                    }
+                ) { Text(if (cancelling) "Cancelling..." else "Yes, cancel") }
+            },
+            dismissButton = {
+                TextButton(
+                    enabled = !cancelling,
+                    onClick = { toCancel = null }
+                ) { Text("Keep it") }
+            }
+        )
+    }
+
+    val now = Instant.now()
+    val upcoming = appointments.filter {
+        it.status == "BOOKED" && Instant.parse(it.startsAt).isAfter(now)
+    }
+    val past = appointments.filter { it !in upcoming }.reversed()
+
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp)
+    ) {
+        TextButton(onClick = onBack) { Text("← Back") }
+        Text("My bookings", style = MaterialTheme.typography.headlineSmall)
+
+        cancelError?.let {
+            Text(
+                it,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(top = 8.dp)
+            )
+        }
+
+        when {
+            loading -> CircularProgressIndicator(Modifier.padding(top = 16.dp))
+            error != null -> Text("Error: $error", Modifier.padding(top = 16.dp))
+            else -> {
+                Text(
+                    "Upcoming",
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.padding(top = 20.dp, bottom = 8.dp)
+                )
+                if (upcoming.isEmpty()) {
+                    Text("No upcoming bookings.")
+                }
+                upcoming.forEach { appointment ->
+                    MyBookingCard(
+                        appointment = appointment,
+                        canCancel = true,
+                        onCancel = { toCancel = appointment }
+                    )
+                    Spacer(Modifier.height(12.dp))
+                }
+
+                Text(
+                    "Past and cancelled",
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.padding(top = 20.dp, bottom = 8.dp)
+                )
+                if (past.isEmpty()) {
+                    Text("Nothing here yet.")
+                }
+                past.forEach { appointment ->
+                    MyBookingCard(
+                        appointment = appointment,
+                        canCancel = false,
+                        onCancel = {}
+                    )
+                    Spacer(Modifier.height(12.dp))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun MyBookingCard(
+    appointment: MyAppointment,
+    canCancel: Boolean,
+    onCancel: () -> Unit
+) {
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp)) {
+            Text(appointment.reference, style = MaterialTheme.typography.titleMedium)
+            Text(statusLabel(appointment.status), style = MaterialTheme.typography.labelMedium)
+            Text(appointment.service, Modifier.padding(top = 8.dp))
+            Text("${appointment.branch}, ${appointment.address}")
+            Text(formatWhen(appointment.startsAt))
+
+            if (canCancel) {
+                Text(
+                    "Documents to bring",
+                    style = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier.padding(top = 12.dp)
+                )
+                appointment.requiredDocuments.forEach { doc ->
+                    Text(
+                        "• ${doc.name}" + (doc.note?.let { " ($it)" } ?: ""),
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+                OutlinedButton(
+                    onClick = onCancel,
+                    modifier = Modifier.padding(top = 12.dp)
+                ) { Text("Cancel booking") }
+            }
         }
     }
 }
