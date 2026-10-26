@@ -21,6 +21,20 @@ data class Branch(
     val slotCapacity: Int
 )
 
+data class RequiredDocument(
+    val id: String,
+    val name: String,
+    val note: String?
+)
+
+data class ServiceType(
+    val id: String,
+    val name: String,
+    val description: String?,
+    val durationMin: Int,
+    val requiredDocuments: List<RequiredDocument>
+)
+
 data class User(
     val id: String,
     val name: String,
@@ -51,6 +65,9 @@ data class ErrorBody(val error: String?)
 interface QueueSmartApi {
     @GET("api/branches")
     suspend fun getBranches(): List<Branch>
+
+    @GET("api/services")
+    suspend fun getServices(): List<ServiceType>
 
     @POST("api/auth/register")
     suspend fun register(@Body body: RegisterRequest): AuthResponse

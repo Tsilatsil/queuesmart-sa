@@ -2,7 +2,9 @@ package com.example.queuesmart
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -32,19 +34,54 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-// Decides which screen to show: login if nobody is logged in, branches if someone is
+// 480 minutes after midnight -> "08:00"
+fun formatMinutes(total: Int): String = "%02d:%02d".format(total / 60, total % 60)
+
+// Decides which screen to show, based on what the person has chosen so far
 @Composable
 fun App(modifier: Modifier = Modifier) {
     var session by remember { mutableStateOf<AuthResponse?>(null) }
-    val current = session
+    var selectedBranch by remember { mutableStateOf<Branch?>(null) }
+    var selectedService by remember { mutableStateOf<ServiceType?>(null) }
 
-    if (current == null) {
-        AuthScreen(modifier, onAuthenticated = { session = it })
-    } else {
-        BranchesScreen(
+    val current = session
+    val branch = selectedBranch
+    val service = selectedService
+
+    // Makes the phone's own Back button step back one screen
+    BackHandler(enabled = branch != null) {
+        if (service != null) selectedService = null else selectedBranch = null
+    }
+
+    when {
+        current == null -> AuthScreen(
+            modifier,
+            onAuthenticated = { session = it }
+        )
+
+        branch == null -> BranchesScreen(
             modifier,
             userName = current.user.name,
-            onLogout = { session = null }
+            onBranchClick = { selectedBranch = it },
+            onLogout = {
+                session = null
+                selectedBranch = null
+                selectedService = null
+            }
+        )
+
+        service == null -> ServicesScreen(
+            modifier,
+            branch = branch,
+            onBack = { selectedBranch = null },
+            onServiceClick = { selectedService = it }
+        )
+
+        else -> ServiceDetailScreen(
+            modifier,
+            branch = branch,
+            service = service,
+            onBack = { selectedService = null }
         )
     }
 }
@@ -147,6 +184,7 @@ fun AuthScreen(
 fun BranchesScreen(
     modifier: Modifier = Modifier,
     userName: String,
+    onBranchClick: (Branch) -> Unit,
     onLogout: () -> Unit
 ) {
     var branches by remember { mutableStateOf<List<Branch>>(emptyList()) }
@@ -183,15 +221,145 @@ fun BranchesScreen(
                 modifier = Modifier.padding(top = 16.dp)
             ) {
                 items(branches) { branch ->
-                    Card(Modifier.fillMaxWidth()) {
+                    Card(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable { onBranchClick(branch) }
+                    ) {
                         Column(Modifier.padding(16.dp)) {
                             Text(branch.name, style = MaterialTheme.typography.titleMedium)
                             Text("${branch.city}, ${branch.province}")
                             Text(branch.address)
+                            Text(
+                                "Open ${formatMinutes(branch.opensAtMin)} to ${formatMinutes(branch.closesAtMin)}",
+                                style = MaterialTheme.typography.bodySmall
+                            )
                         }
                     }
                 }
             }
         }
+    }
+}
+
+@Composable
+fun ServicesScreen(
+    modifier: Modifier = Modifier,
+    branch: Branch,
+    onBack: () -> Unit,
+    onServiceClick: (ServiceType) -> Unit
+) {
+    var services by remember { mutableStateOf<List<ServiceType>>(emptyList()) }
+    var loading by remember { mutableStateOf(true) }
+    var error by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(Unit) {
+        try {
+            services = ApiClient.api.getServices()
+        } catch (e: Exception) {
+            error = errorMessage(e)
+        } finally {
+            loading = false
+        }
+    }
+
+    Column(modifier = modifier.padding(16.dp)) {
+        TextButton(onClick = onBack) { Text("← Back to branches") }
+
+        Text(branch.name, style = MaterialTheme.typography.headlineSmall)
+        Text("Open ${formatMinutes(branch.opensAtMin)} to ${formatMinutes(branch.closesAtMin)}")
+
+        Text(
+            "Choose a service",
+            style = MaterialTheme.typography.titleMedium,
+            modifier = Modifier.padding(top = 16.dp)
+        )
+
+        when {
+            loading -> CircularProgressIndicator(Modifier.padding(top = 16.dp))
+            error != null -> Text("Error: $error", Modifier.padding(top = 16.dp))
+            else -> LazyColumn(
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+                modifier = Modifier.padding(top = 12.dp)
+            ) {
+                items(services) { service ->
+                    Card(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable { onServiceClick(service) }
+                    ) {
+                        Column(Modifier.padding(16.dp)) {
+                            Text(service.name, style = MaterialTheme.typography.titleMedium)
+                            service.description?.let { Text(it) }
+                            Text(
+                                "About ${service.durationMin} minutes",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun ServiceDetailScreen(
+    modifier: Modifier = Modifier,
+    branch: Branch,
+    service: ServiceType,
+    onBack: () -> Unit
+) {
+    // Remembers which documents have been ticked on this screen
+    val ticked = remember { mutableStateMapOf<String, Boolean>() }
+
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp)
+    ) {
+        TextButton(onClick = onBack) { Text("← Back to services") }
+
+        Text(service.name, style = MaterialTheme.typography.headlineSmall)
+        Text(branch.name, style = MaterialTheme.typography.bodyMedium)
+        service.description?.let { Text(it, Modifier.padding(top = 8.dp)) }
+        Text(
+            "About ${service.durationMin} minutes",
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.padding(top = 4.dp)
+        )
+
+        Text(
+            "Documents to bring",
+            style = MaterialTheme.typography.titleMedium,
+            modifier = Modifier.padding(top = 24.dp, bottom = 8.dp)
+        )
+
+        service.requiredDocuments.forEach { doc ->
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Checkbox(
+                    checked = ticked[doc.id] == true,
+                    onCheckedChange = { ticked[doc.id] = it }
+                )
+                Column {
+                    Text(doc.name)
+                    doc.note?.let {
+                        Text(it, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+        }
+
+        val total = service.requiredDocuments.size
+        val done = ticked.values.count { it }
+        Text(
+            "$done of $total ready",
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.padding(top = 16.dp)
+        )
     }
 }
