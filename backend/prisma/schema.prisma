@@ -1,0 +1,77 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../app/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  CITIZEN
+  STAFF
+  ADMIN
+}
+
+enum AppointmentStatus {
+  BOOKED
+  CANCELLED
+  ATTENDED
+  NO_SHOW
+}
+
+model User {
+  id           String        @id @default(cuid())
+  name         String
+  email        String        @unique
+  passwordHash String
+  role         Role          @default(CITIZEN)
+  createdAt    DateTime      @default(now())
+  appointments Appointment[]
+}
+
+model Branch {
+  id           String        @id @default(cuid())
+  name         String
+  city         String
+  province     String
+  address      String
+  opensAtMin   Int           @default(480)
+  closesAtMin  Int           @default(960)
+  slotCapacity Int           @default(5)
+  appointments Appointment[]
+}
+
+model ServiceType {
+  id                String             @id @default(cuid())
+  name              String
+  description       String?
+  durationMin       Int
+  requiredDocuments RequiredDocument[]
+  appointments      Appointment[]
+}
+
+model RequiredDocument {
+  id            String      @id @default(cuid())
+  serviceTypeId String
+  serviceType   ServiceType @relation(fields: [serviceTypeId], references: [id])
+  name          String
+  note          String?
+}
+
+model Appointment {
+  id            String            @id @default(cuid())
+  reference     String            @unique
+  userId        String
+  branchId      String
+  serviceTypeId String
+  user          User              @relation(fields: [userId], references: [id])
+  branch        Branch            @relation(fields: [branchId], references: [id])
+  serviceType   ServiceType       @relation(fields: [serviceTypeId], references: [id])
+  startsAt      DateTime
+  status        AppointmentStatus @default(BOOKED)
+  createdAt     DateTime          @default(now())
+
+  @@index([branchId, startsAt])
+}
