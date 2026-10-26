@@ -1,0 +1,25 @@
+import { SignJWT, jwtVerify } from "jose";
+
+function getSecret() {
+  const secret = process.env.JWT_SECRET;
+  if (!secret) {
+    throw new Error("JWT_SECRET is not set in .env");
+  }
+  return new TextEncoder().encode(secret);
+}
+
+// Creates a signed token that lasts 7 days
+export async function createToken(userId: string, role: string) {
+  return new SignJWT({ role })
+    .setProtectedHeader({ alg: "HS256" })
+    .setSubject(userId)
+    .setIssuedAt()
+    .setExpirationTime("7d")
+    .sign(getSecret());
+}
+
+// Checks a token and returns what's inside it (we'll use this later)
+export async function verifyToken(token: string) {
+  const { payload } = await jwtVerify(token, getSecret());
+  return payload;
+}
