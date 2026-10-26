@@ -6,7 +6,9 @@ import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 import retrofit2.http.Body
 import retrofit2.http.GET
+import retrofit2.http.Header
 import retrofit2.http.POST
+import retrofit2.http.Query
 
 // ---- Data blueprints (they match the JSON from your backend) ----
 
@@ -58,6 +60,41 @@ data class LoginRequest(
     val password: String
 )
 
+data class Slot(
+    val startsAt: String,
+    val time: String,
+    val capacity: Int,
+    val remaining: Int,
+    val available: Boolean
+)
+
+data class SlotsResponse(
+    val branchId: String,
+    val date: String,
+    val closed: Boolean,
+    val message: String?,
+    val slots: List<Slot>
+)
+
+data class BookingRequest(
+    val branchId: String,
+    val serviceTypeId: String,
+    val startsAt: String
+)
+
+data class BookedAppointment(
+    val id: String,
+    val reference: String,
+    val startsAt: String,
+    val status: String,
+    val branch: String,
+    val service: String
+)
+
+data class BookingResponse(
+    val appointment: BookedAppointment
+)
+
 data class ErrorBody(val error: String?)
 
 // ---- The questions the app can ask your API ----
@@ -69,11 +106,24 @@ interface QueueSmartApi {
     @GET("api/services")
     suspend fun getServices(): List<ServiceType>
 
+    @GET("api/slots")
+    suspend fun getSlots(
+        @Query("branchId") branchId: String,
+        @Query("date") date: String
+    ): SlotsResponse
+
     @POST("api/auth/register")
     suspend fun register(@Body body: RegisterRequest): AuthResponse
 
     @POST("api/auth/login")
     suspend fun login(@Body body: LoginRequest): AuthResponse
+
+    // The token proves who is booking
+    @POST("api/appointments")
+    suspend fun book(
+        @Header("Authorization") authorization: String,
+        @Body body: BookingRequest
+    ): BookingResponse
 }
 
 // ---- Builds the connection to your backend ----

@@ -5,6 +5,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -19,6 +20,13 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.example.queuesmart.ui.theme.QueueSmartTheme
+import java.time.DayOfWeek
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
+import java.time.ZonedDateTime
+import java.time.format.DateTimeFormatter
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -34,8 +42,21 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+// South Africa's time zone. The backend works in this zone too.
+private val SA_ZONE: ZoneId = ZoneId.of("Africa/Johannesburg")
+private val DAY_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("EEE d MMM")
+
 // 480 minutes after midnight -> "08:00"
 fun formatMinutes(total: Int): String = "%02d:%02d".format(total / 60, total % 60)
+
+// The next 14 weekdays, starting today (branches are closed on weekends)
+fun upcomingWeekdays(count: Int = 14): List<LocalDate> {
+    val today = LocalDate.now(SA_ZONE)
+    return generateSequence(today) { it.plusDays(1) }
+        .filter { it.dayOfWeek != DayOfWeek.SATURDAY && it.dayOfWeek != DayOfWeek.SUNDAY }
+        .take(count)
+        .toList()
+}
 
 // Decides which screen to show, based on what the person has chosen so far
 @Composable
@@ -43,6 +64,7 @@ fun App(modifier: Modifier = Modifier) {
     var session by remember { mutableStateOf<AuthResponse?>(null) }
     var selectedBranch by remember { mutableStateOf<Branch?>(null) }
     var selectedService by remember { mutableStateOf<ServiceType?>(null) }
+    var booking by remember { mutableStateOf(false) }
 
     val current = session
     val branch = selectedBranch
@@ -50,7 +72,11 @@ fun App(modifier: Modifier = Modifier) {
 
     // Makes the phone's own Back button step back one screen
     BackHandler(enabled = branch != null) {
-        if (service != null) selectedService = null else selectedBranch = null
+        when {
+            booking -> booking = false
+            service != null -> selectedService = null
+            else -> selectedBranch = null
+        }
     }
 
     when {
@@ -67,6 +93,7 @@ fun App(modifier: Modifier = Modifier) {
                 session = null
                 selectedBranch = null
                 selectedService = null
+                booking = false
             }
         )
 
@@ -77,11 +104,25 @@ fun App(modifier: Modifier = Modifier) {
             onServiceClick = { selectedService = it }
         )
 
-        else -> ServiceDetailScreen(
+        !booking -> ServiceDetailScreen(
             modifier,
             branch = branch,
             service = service,
-            onBack = { selectedService = null }
+            onBack = { selectedService = null },
+            onBook = { booking = true }
+        )
+
+        else -> BookingScreen(
+            modifier,
+            token = current.token,
+            branch = branch,
+            service = service,
+            onBack = { booking = false },
+            onDone = {
+                booking = false
+                selectedService = null
+                selectedBranch = null
+            }
         )
     }
 }
@@ -308,7 +349,8 @@ fun ServiceDetailScreen(
     modifier: Modifier = Modifier,
     branch: Branch,
     service: ServiceType,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    onBook: () -> Unit
 ) {
     // Remembers which documents have been ticked on this screen
     val ticked = remember { mutableStateMapOf<String, Boolean>() }
@@ -361,5 +403,267 @@ fun ServiceDetailScreen(
             style = MaterialTheme.typography.bodyMedium,
             modifier = Modifier.padding(top = 16.dp)
         )
+
+        Button(
+            onClick = onBook,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 24.dp)
+        ) {
+            Text("Book an appointment")
+        }
+    }
+}
+
+@Composable
+fun BookingScreen(
+    modifier: Modifier = Modifier,
+    token: String,
+    branch: Branch,
+    service: ServiceType,
+    onBack: () -> Unit,
+    onDone: () -> Unit
+) {
+    val dates = remember { upcomingWeekdays() }
+    var selectedDate by remember { mutableStateOf(dates.first()) }
+    var slotsResponse by remember { mutableStateOf<SlotsResponse?>(null) }
+    var loadingSlots by remember { mutableStateOf(true) }
+    var slotsError by remember { mutableStateOf<String?>(null) }
+    var refresh by remember { mutableIntStateOf(0) }
+    var selectedSlot by remember { mutableStateOf<Slot?>(null) }
+    var booking by remember { mutableStateOf(false) }
+    var bookingError by remember { mutableStateOf<String?>(null) }
+    var booked by remember { mutableStateOf<BookedAppointment?>(null) }
+    val scope = rememberCoroutineScope()
+
+    // Loads the time slots again whenever the day changes (or after a failed booking)
+    LaunchedEffect(selectedDate, refresh) {
+        loadingSlots = true
+        slotsError = null
+        slotsResponse = null
+        try {
+            slotsResponse = ApiClient.api.getSlots(branch.id, selectedDate.toString())
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            slotsError = errorMessage(e)
+        } finally {
+            loadingSlots = false
+        }
+    }
+
+    val confirmed = booked
+    if (confirmed != null) {
+        BookingConfirmed(modifier, confirmed, service, onDone)
+    } else {
+        Column(
+            modifier = modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp)
+        ) {
+            TextButton(onClick = onBack) { Text("← Back") }
+
+            Text("Book an appointment", style = MaterialTheme.typography.headlineSmall)
+            Text("${service.name} at ${branch.name}")
+
+            Text(
+                "Choose a day",
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.padding(top = 16.dp)
+            )
+            Row(
+                modifier = Modifier
+                    .horizontalScroll(rememberScrollState())
+                    .padding(top = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                dates.forEach { date ->
+                    val label = date.format(DAY_FORMAT)
+                    if (date == selectedDate) {
+                        Button(onClick = {}) { Text(label) }
+                    } else {
+                        OutlinedButton(onClick = {
+                            selectedDate = date
+                            selectedSlot = null
+                            bookingError = null
+                        }) { Text(label) }
+                    }
+                }
+            }
+
+            Text(
+                "Choose a time",
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.padding(top = 20.dp, bottom = 8.dp)
+            )
+
+            val response = slotsResponse
+            when {
+                loadingSlots -> CircularProgressIndicator()
+                slotsError != null -> Text("Error: $slotsError")
+                response == null -> {}
+                response.closed -> Text(response.message ?: "This branch is closed.")
+                else -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    response.slots.chunked(3).forEach { rowSlots ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            rowSlots.forEach { slot ->
+                                SlotButton(
+                                    slot = slot,
+                                    selected = selectedSlot?.startsAt == slot.startsAt,
+                                    onClick = { selectedSlot = slot },
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                            // Keeps the last row's buttons the same width as the others
+                            repeat(3 - rowSlots.size) {
+                                Spacer(Modifier.weight(1f))
+                            }
+                        }
+                    }
+                }
+            }
+
+            bookingError?.let {
+                Text(
+                    it,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(top = 16.dp)
+                )
+            }
+
+            val chosen = selectedSlot
+            Button(
+                onClick = {
+                    if (chosen != null) {
+                        bookingError = null
+                        booking = true
+                        scope.launch {
+                            try {
+                                val result = ApiClient.api.book(
+                                    "Bearer $token",
+                                    BookingRequest(branch.id, service.id, chosen.startsAt)
+                                )
+                                booked = result.appointment
+                            } catch (e: Exception) {
+                                bookingError = errorMessage(e)
+                                selectedSlot = null
+                                refresh++
+                            } finally {
+                                booking = false
+                            }
+                        }
+                    }
+                },
+                enabled = chosen != null && !booking,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 24.dp)
+            ) {
+                Text(
+                    when {
+                        booking -> "Booking..."
+                        chosen != null -> "Confirm ${chosen.time} on ${selectedDate.format(DAY_FORMAT)}"
+                        else -> "Choose a time"
+                    }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun SlotButton(
+    slot: Slot,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val padding = PaddingValues(horizontal = 4.dp, vertical = 8.dp)
+    if (selected) {
+        Button(
+            onClick = onClick,
+            enabled = slot.available,
+            contentPadding = padding,
+            modifier = modifier
+        ) { SlotLabel(slot) }
+    } else {
+        OutlinedButton(
+            onClick = onClick,
+            enabled = slot.available,
+            contentPadding = padding,
+            modifier = modifier
+        ) { SlotLabel(slot) }
+    }
+}
+
+@Composable
+fun SlotLabel(slot: Slot) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(slot.time)
+        Text(
+            when {
+                slot.remaining == 0 -> "Full"
+                !slot.available -> "Passed"
+                else -> "${slot.remaining} left"
+            },
+            style = MaterialTheme.typography.labelSmall
+        )
+    }
+}
+
+@Composable
+fun BookingConfirmed(
+    modifier: Modifier = Modifier,
+    appointment: BookedAppointment,
+    service: ServiceType,
+    onDone: () -> Unit
+) {
+    val whenText = ZonedDateTime
+        .ofInstant(Instant.parse(appointment.startsAt), SA_ZONE)
+        .format(DateTimeFormatter.ofPattern("EEEE d MMMM yyyy, HH:mm"))
+
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp)
+    ) {
+        Text("Booking confirmed", style = MaterialTheme.typography.headlineSmall)
+
+        Card(
+            Modifier
+                .fillMaxWidth()
+                .padding(top = 16.dp)
+        ) {
+            Column(Modifier.padding(16.dp)) {
+                Text("Your reference", style = MaterialTheme.typography.labelMedium)
+                Text(appointment.reference, style = MaterialTheme.typography.headlineMedium)
+                Text(appointment.service, Modifier.padding(top = 12.dp))
+                Text(appointment.branch)
+                Text(whenText)
+            }
+        }
+
+        Text(
+            "Documents to bring",
+            style = MaterialTheme.typography.titleMedium,
+            modifier = Modifier.padding(top = 24.dp, bottom = 8.dp)
+        )
+        service.requiredDocuments.forEach { doc ->
+            Text("• ${doc.name}" + (doc.note?.let { " ($it)" } ?: ""))
+        }
+
+        Button(
+            onClick = onDone,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 24.dp)
+        ) {
+            Text("Done")
+        }
     }
 }
