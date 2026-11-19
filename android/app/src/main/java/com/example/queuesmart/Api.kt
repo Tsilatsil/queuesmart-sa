@@ -1,6 +1,8 @@
 package com.example.queuesmart
 
 import com.google.gson.Gson
+import java.util.concurrent.TimeUnit
+import okhttp3.OkHttpClient
 import retrofit2.HttpException
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
@@ -166,11 +168,22 @@ interface QueueSmartApi {
     ): CancelResponse
 }
 
-// ---- Builds the connection to your backend ----
+// ---- Builds the connection to your live backend ----
 
 object ApiClient {
+    private const val BASE_URL = "https://queuesmart-sa-gvgi.vercel.app/"
+
+    // The free database can take a few seconds to wake up after a quiet
+    // period, so we wait up to 30 seconds instead of the default 10.
+    private val httpClient = OkHttpClient.Builder()
+        .connectTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .writeTimeout(30, TimeUnit.SECONDS)
+        .build()
+
     val api: QueueSmartApi = Retrofit.Builder()
-        .baseUrl("http://localhost:3000/")
+        .baseUrl(BASE_URL)
+        .client(httpClient)
         .addConverterFactory(GsonConverterFactory.create())
         .build()
         .create(QueueSmartApi::class.java)
